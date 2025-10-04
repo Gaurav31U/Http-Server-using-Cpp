@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
   
   accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   std::cout << "Client connected\n";
+  
   char buffer[1024];
   ssize_t bytes_received = recv(server_fd, buffer, sizeof(buffer) - 1, 0);
   if (bytes_received < 0) {
@@ -64,6 +65,8 @@ int main(int argc, char **argv) {
   }
   buffer[bytes_received] = '\0'; // Null-terminate the received data
   std::string msg = "HTTP/1.1 200 OK\r\n\r\n";
+  std::string body(buffer);
+  std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
   send(server_fd, msg.c_str(), msg.size(), 0);
   
   close(server_fd);
