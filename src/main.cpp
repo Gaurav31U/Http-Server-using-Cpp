@@ -56,7 +56,7 @@ void handle_client(int client_socket,std::string &folderpath) {
                   response += "Content-Type: application/octet-stream\r\n";
                   response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n\r\n";
                   response += file_content;
-                  send(client_socket, response.c_str(), response.size(), 0)
+                  send(client_socket, response.c_str(), response.size(), 0);
               }else{
                   send(client_socket, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36, 0);
               } 
