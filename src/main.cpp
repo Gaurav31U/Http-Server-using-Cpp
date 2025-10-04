@@ -8,6 +8,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <thread>
+#include <vector>
+#include <filesystem>
 
 void handle_client(int client_socket,std::string &folderpath) {
     while (true) {
