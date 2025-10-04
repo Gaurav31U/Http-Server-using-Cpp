@@ -9,7 +9,7 @@
 #include <netdb.h>
 #include <thread>
 
-void handle_client(int client_socket) {
+void handle_client(int client_socket,std::string &folderpath) {
     while (true) {
   
       char buffer[1024];
@@ -43,6 +43,35 @@ void handle_client(int client_socket) {
           response += user_agent;
           send(client_socket, response.c_str(), response.size(), 0);
   
+      }else if(url_path.substr(0,6) == "/files"){
+          std::string filename = url_path.substr(7);
+          std::vector<std::string> files;
+          // how to checkout the files in the folderpath
+          std::string command = "ls " + folderpath;
+          for(auto & p : std::filesystem::directory_iterator(folderpath))
+              files.push_back(p.path().filename());
+          bool file_found = false;
+          for(const auto & file : files){
+              if(file == filename){
+                  file_found = true;
+                  break;
+              }
+          }
+          if(file_found){
+              std::ifstream file_stream(folderpath + "/" + filename, std::ios::binary);
+              if(file_stream){
+                  std::ostringstream ss;
+                  ss << file_stream.rdbuf();
+                  std::string file_content = ss.str();
+                  std::string response = "HTTP/1.1 200 OK\r\n";
+                  response += "Content-Type: application/octet-stream\r\n";
+                  response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n\r\n";
+                  response += file_content;
+                  send(client_socket, response.c_str(), response.size(), 0);
+              }
+            }else{
+              send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
+            }      
       }else{
           send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
       }
@@ -85,12 +114,17 @@ int main(int argc, char **argv) {
   socklen_t client_addr_len = sizeof(client_addr);
   
   std::cout << "Waiting for a client to connect...\n";
-
+  std::string command;
+  std::string filepath;
+  if(argc == 3){
+      command = argv[1];
+      filepath = argv[2];
+  }
   while(true){
     std::cout << "Waiting for a client to connect...\n";
     int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
     std::cout << "Client connected\n";
-    std::thread client_thread(handle_client, client_fd);
+    std::thread client_thread(handle_client, client_fd,filepath);
     client_thread.detach();
   }
   
