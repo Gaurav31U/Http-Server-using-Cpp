@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   buffer[bytes_received] = '\0'; // Null-terminate the received data
-  std::string msg = "HTTP/1.1 200 OK\r\n\r\n"
+  std::string msg = "HTTP/1.1 200 OK\r\n\r\n";
   send(server_fd, msg.c_str(), msg.size(), 0);
   
   close(server_fd);
