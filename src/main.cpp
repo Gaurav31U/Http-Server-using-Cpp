@@ -52,7 +52,9 @@ int main(int argc, char **argv) {
   int client_addr_len = sizeof(client_addr);
   
   std::cout << "Waiting for a client to connect...\n";
-  
+
+
+
   while (true) {
     int client_socket = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
     if (client_socket < 0) {
@@ -73,6 +75,8 @@ int main(int argc, char **argv) {
     std::string body(buffer);
     std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
     send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
+
+    close(client_socket);
   }
   
   close(server_fd);
