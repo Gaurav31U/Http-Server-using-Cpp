@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
     std::cout << "Waiting for a client to connect...\n";
     int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
     std::cout << "Client connected\n";
-    std::thread client_thread(handle_client, client_fd,filepath);
+    std::thread client_thread(handle_client, client_fd,std::ref(filepath));
     client_thread.detach();
   }
   
