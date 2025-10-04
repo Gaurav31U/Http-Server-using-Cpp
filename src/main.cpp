@@ -60,6 +60,7 @@ void handle_client(int client_socket,std::string &folderpath) {
               }else{
                   send(client_socket, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36, 0);
               } 
+             file.close();
           }else{
               send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
           }  
