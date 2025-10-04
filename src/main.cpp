@@ -9,23 +9,13 @@
 #include <netdb.h>
 
 int main(int argc, char **argv) {
-  // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
-  
-  // You can use print statements as follows for debugging, they'll be visible when running tests.
-  // std::cout << "Logs from your program will appear here!\n";
-
-  // Uncomment this block to pass the first stage
-  //
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
    std::cerr << "Failed to create server socket\n";
    return 1;
   }
-  //
-  // Since the tester restarts your program quite often, setting SO_REUSEADDR
-  // ensures that we don't run into 'Address already in use' errors
   int reuse = 1;
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
     std::cerr << "setsockopt failed\n";
@@ -63,17 +53,17 @@ int main(int argc, char **argv) {
     }
     std::cout << "Client connected\n";
 
-    char buffer[1024];
-    ssize_t bytes_received = recv(server_fd, buffer, sizeof(buffer) - 1, 0);
-    if (bytes_received < 0) {
-      std::cerr << "recv failed\n";
-      close(server_fd);
-      return 1;
-    }
-    buffer[bytes_received] = '\0'; // Null-terminate the received data
-    std::string msg = "HTTP/1.1 200 OK\r\n\r\n";
-    std::string body(buffer);
-    std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
+    // char buffer[1024];
+    // ssize_t bytes_received = recv(server_fd, buffer, sizeof(buffer) - 1, 0);
+    // if (bytes_received < 0) {
+    //   std::cerr << "recv failed\n";
+    //   close(server_fd);
+    //   return 1;
+    // }
+    // buffer[bytes_received] = '\0'; // Null-terminate the received data
+    // std::string msg = "HTTP/1.1 200 OK\r\n\r\n";
+    // std::string body(buffer);
+    // std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
     send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
 
     close(client_socket);
