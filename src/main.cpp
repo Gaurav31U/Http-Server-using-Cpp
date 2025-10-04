@@ -72,6 +72,19 @@ int main(int argc, char **argv) {
         response += "Content-Length: " + std::to_string(message.size()) + "\r\n\r\n";
         response += message;
         send(client_socket, response.c_str(), response.size(), 0);
+    }else if(url_path == "/user-agent"){
+        std::string user_agent = "Unknown";
+        size_t ua_pos = body.find("User-Agent: ");
+        if (ua_pos != std::string::npos) {
+            size_t ua_end = body.find("\r\n", ua_pos);
+            user_agent = body.substr(ua_pos + 12, ua_end - (ua_pos + 12));
+        }
+        std::string response = "HTTP/1.1 200 OK\r\n";
+        response += "Content-Type: text/plain\r\n";
+        response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n\r\n";
+        response += user_agent;
+        send(client_socket, response.c_str(), response.size(), 0);
+
     }else{
         send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
     }
