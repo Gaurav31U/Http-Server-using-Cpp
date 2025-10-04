@@ -22,6 +22,15 @@ void handle_client(int client_socket,std::string &folderpath) {
       }
       buffer[bytes_received] = '\0'; // Null-terminate the received data
       std::string body(buffer);
+      std::string url_path;
+      std::string method;
+      if(body.find("GET ") != std::string::npos){
+        method = "GET";
+        url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
+      }else if(body.find("POST ") != std::string::npos){
+        method = "POST";
+        url_path= body.substr(body.find("POST ") + 5, body.find(" HTTP/") - (body.find("POST ") + 5));
+      }
       std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
       if(url_path == "/"){
           send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
@@ -45,7 +54,7 @@ void handle_client(int client_socket,std::string &folderpath) {
           response += user_agent;
           send(client_socket, response.c_str(), response.size(), 0);
   
-      }else if(url_path.substr(0,6) == "/files"){
+      }else if(url_path.substr(0,6) == "/files" && method == "GET"){
           std::vector<std::string> file_list;
           for (const auto & entry : std::filesystem::directory_iterator(folderpath)) {
               file_list.push_back(entry.path().filename().string());
@@ -74,6 +83,24 @@ void handle_client(int client_socket,std::string &folderpath) {
                   send(client_socket, response.c_str(), response.size(), 0);
               }
             }
+      }else if(url_path.substr(0,6) == "/files" && method == "POST"){
+          std::string file_to_create = url_path.substr(7);
+          size_t header_end = body.find("\r\n\r\n");
+          if(header_end == std::string::npos){
+              send(client_socket, "HTTP/1.1 400 Bad Request\r\n\r\n", 28, 0);
+              close(client_socket);
+              return;
+          }
+          std::string file_content = body.substr(header_end + 4);
+          std::ofstream file(folderpath + "/" + file_to_create, std::ios::binary);
+          if(file){
+              file << file_content;
+              file.close();
+              send(client_socket, "HTTP/1.1 201 Created\r\n\r\n", 24, 0);
+          }else{
+              send(client_socket, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 39, 0);
+          }
+        
       }else{
           send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
       }
