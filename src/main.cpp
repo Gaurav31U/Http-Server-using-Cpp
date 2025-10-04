@@ -46,34 +46,20 @@ void handle_client(int client_socket,std::string &folderpath) {
           send(client_socket, response.c_str(), response.size(), 0);
   
       }else if(url_path.substr(0,6) == "/files"){
-          std::string filename = url_path.substr(7);
-          std::vector<std::string> files;
-          // how to checkout the files in the folderpath
-          std::string command = "ls " + folderpath;
-          for(auto & p : std::filesystem::directory_iterator(folderpath))
-              files.push_back(p.path().filename());
-          bool file_found = false;
-          for(const auto & file : files){
-              if(file == filename){
-                  file_found = true;
-                  break;
-              }
-          }
-          if(file_found){
-              std::ifstream file_stream(folderpath + "/" + filename, std::ios::binary);
-              if(file_stream){
-                  std::ostringstream ss;
-                  ss << file_stream.rdbuf();
-                  std::string file_content = ss.str();
+          std::string filename= url_path.substr(7);
+          std::string filepath = folderpath + "/" + filename;
+          if(std::filesystem::exists(filepath) && std::filesystem::is_regular_file(filepath)){
+              std::ifstream file(filepath, std::ios::binary);
+              if(file){ 
+                  std::string file_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
                   std::string response = "HTTP/1.1 200 OK\r\n";
                   response += "Content-Type: application/octet-stream\r\n";
                   response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n\r\n";
                   response += file_content;
-                  send(client_socket, response.c_str(), response.size(), 0);
-              }
-            }else{
-              send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
-            }      
+                  send(client_socket, response.c_str(), response.size(), 0)
+              }else{
+                  send(client_socket, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36, 0);
+              }   
       }else{
           send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
       }
