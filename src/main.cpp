@@ -31,7 +31,6 @@ void handle_client(int client_socket,std::string &folderpath) {
         method = "POST";
         url_path= body.substr(body.find("POST ") + 5, body.find(" HTTP/") - (body.find("POST ") + 5));
       }
-      std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
       if(url_path == "/"){
           send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
       }else if(url_path.substr(0,5) == "/echo"){
