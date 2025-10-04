@@ -68,8 +68,8 @@ int main(int argc, char **argv) {
     }else if(url_path.substr(0,5) == "/echo"){
         std::string message = url_path.substr(6);
         std::string response = "HTTP/1.1 200 OK\r\n\r\n";
-        response += "Content-type: text/plain\r\n";
-        response += "Content-length: " + std::to_string(message.size()) + "\r\n\r\n";
+        response += "Content-Type: text/plain\r\n";
+        response += "Content-Length: " + std::to_string(message.size()) + "\r\n\r\n";
         response += message;
         send(client_socket, response.c_str(), response.size(), 0);
     }else{
