@@ -16,8 +16,7 @@ void handle_client(int client_socket) {
       ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
       if (bytes_received < 0) {
         std::cerr << "recv failed\n";
-        close(server_fd);
-        return 1;
+        return;
       }
       buffer[bytes_received] = '\0'; // Null-terminate the received data
       std::string body(buffer);
