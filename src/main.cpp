@@ -49,7 +49,6 @@ void handle_client(int client_socket) {
       }
       close(client_socket);
     }
-    close(client_fd);
 }
 
 
