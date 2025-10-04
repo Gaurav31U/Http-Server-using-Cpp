@@ -9,7 +9,7 @@
 #include <netdb.h>
 #include <thread>
 
-void handle_client(int client_fd) {
+void handle_client(int client_socket) {
     while (true) {
   
       char buffer[1024];
