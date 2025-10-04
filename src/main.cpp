@@ -7,6 +7,51 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <thread>
+
+void handle_client(int client_fd) {
+    while (true) {
+  
+      char buffer[1024];
+      ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+      if (bytes_received < 0) {
+        std::cerr << "recv failed\n";
+        close(server_fd);
+        return 1;
+      }
+      buffer[bytes_received] = '\0'; // Null-terminate the received data
+      std::string body(buffer);
+      std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
+      if(url_path == "/"){
+          send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
+      }else if(url_path.substr(0,5) == "/echo"){
+          std::string message = url_path.substr(6);
+          std::string response = "HTTP/1.1 200 OK\r\n";
+          response += "Content-Type: text/plain\r\n";
+          response += "Content-Length: " + std::to_string(message.size()) + "\r\n\r\n";
+          response += message;
+          send(client_socket, response.c_str(), response.size(), 0);
+      }else if(url_path == "/user-agent"){
+          std::string user_agent = "Unknown";
+          size_t ua_pos = body.find("User-Agent: ");
+          if (ua_pos != std::string::npos) {
+              size_t ua_end = body.find("\r\n", ua_pos);
+              user_agent = body.substr(ua_pos + 12, ua_end - (ua_pos + 12));
+          }
+          std::string response = "HTTP/1.1 200 OK\r\n";
+          response += "Content-Type: text/plain\r\n";
+          response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n\r\n";
+          response += user_agent;
+          send(client_socket, response.c_str(), response.size(), 0);
+  
+      }else{
+          send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
+      }
+      close(client_socket);
+    }
+    close(client_fd);
+}
+
 
 int main(int argc, char **argv) {
   std::cout << std::unitbuf;
@@ -43,53 +88,15 @@ int main(int argc, char **argv) {
   
   std::cout << "Waiting for a client to connect...\n";
 
-
-
-  while (true) {
-    int client_socket = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
-    if (client_socket < 0) {
-        std::cerr << "Failed to accept connection\n";
-        continue;
-    }
+  while(true){
+    std::cout << "Waiting for a client to connect...\n";
+    int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
     std::cout << "Client connected\n";
-
-    char buffer[1024];
-    ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-    if (bytes_received < 0) {
-      std::cerr << "recv failed\n";
-      close(server_fd);
-      return 1;
-    }
-    buffer[bytes_received] = '\0'; // Null-terminate the received data
-    std::string body(buffer);
-    std::string url_path= body.substr(body.find("GET ") + 4, body.find(" HTTP/") - (body.find("GET ") + 4));
-    if(url_path == "/"){
-        send(client_socket, "HTTP/1.1 200 OK\r\n\r\n", 20, 0);
-    }else if(url_path.substr(0,5) == "/echo"){
-        std::string message = url_path.substr(6);
-        std::string response = "HTTP/1.1 200 OK\r\n";
-        response += "Content-Type: text/plain\r\n";
-        response += "Content-Length: " + std::to_string(message.size()) + "\r\n\r\n";
-        response += message;
-        send(client_socket, response.c_str(), response.size(), 0);
-    }else if(url_path == "/user-agent"){
-        std::string user_agent = "Unknown";
-        size_t ua_pos = body.find("User-Agent: ");
-        if (ua_pos != std::string::npos) {
-            size_t ua_end = body.find("\r\n", ua_pos);
-            user_agent = body.substr(ua_pos + 12, ua_end - (ua_pos + 12));
-        }
-        std::string response = "HTTP/1.1 200 OK\r\n";
-        response += "Content-Type: text/plain\r\n";
-        response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n\r\n";
-        response += user_agent;
-        send(client_socket, response.c_str(), response.size(), 0);
-
-    }else{
-        send(client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
-    }
-    close(client_socket);
+    std::thread client_thread(handle_client, client_fd);
+    client_thread.detach();
   }
+  
+  
   
   close(server_fd);
 
