@@ -53,10 +53,6 @@ int main(int argc, char **argv) {
   
   std::cout << "Waiting for a client to connect...\n";
   
-  accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-  std::cout << "Client connected\n";
-
-
   while (true) {
     int client_socket = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
     if (client_socket < 0) {
@@ -64,7 +60,6 @@ int main(int argc, char **argv) {
         continue;
     }
     std::cout << "Client connected\n";
-
 
     char buffer[1024];
     ssize_t bytes_received = recv(server_fd, buffer, sizeof(buffer) - 1, 0);
