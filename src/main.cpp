@@ -2,7 +2,9 @@
 #include <cstdlib>
 #include <cerrno>
 #include <string>
+#include <vector>
 #include <cstring>
+#include <algorithm>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,469 +15,277 @@
 #include <sstream>
 #include <zlib.h>
 
-constexpr char RESP_200[] = "HTTP/1.1 200 OK\r\n\r\n";
-constexpr size_t RESP_200_LEN = sizeof(RESP_200) - 1;
-
-constexpr char RESP_404[] = "HTTP/1.1 404 Not Found\r\n\r\n";
-constexpr size_t RESP_404_LEN = sizeof(RESP_404) - 1;
-
-constexpr char RESP_201[] = "HTTP/1.1 201 Created\r\n\r\n";
-constexpr size_t RESP_201_LEN = sizeof(RESP_201) - 1;
-
+constexpr size_t BUFFER_SIZE = 4096;
 
 std::string g_directory = "";
 
+// --- Helper: GZIP Compression ---
 std::string gzip_compress(const std::string& data) {
-  z_stream zs;
-  std::memset(&zs, 0, sizeof(zs));
+    z_stream zs;
+    std::memset(&zs, 0, sizeof(zs));
 
-  if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED,  15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-    return "";
-  }
-
-  zs.next_in = (Bytef*)data.data();
-  zs.avail_in = data.size();
-
-  int ret;
-  char outbuffer[32768];
-  std::string compressed;
-
-  do {
-    zs.next_out = reinterpret_cast<Bytef*>(outbuffer);
-    zs.avail_out = sizeof(outbuffer);
-
-    ret = deflate(&zs, Z_FINISH);
-
-    if (compressed.size() < zs.total_out) {
-      compressed.append(outbuffer, zs.total_out - compressed.size());
+    // windowBits = 15 + 16 (gzip header)
+    if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return "";
     }
-  } while (ret == Z_OK);
 
-  deflateEnd(&zs);
+    zs.next_in = (Bytef*)data.data();
+    zs.avail_in = data.size();
 
-  if (ret != Z_STREAM_END) {
-    return "";
-  }
+    int ret;
+    char outbuffer[32768];
+    std::string compressed;
 
-  return compressed;
+    do {
+        zs.next_out = reinterpret_cast<Bytef*>(outbuffer);
+        zs.avail_out = sizeof(outbuffer);
+
+        ret = deflate(&zs, Z_FINISH);
+
+        if (compressed.size() < zs.total_out) {
+            compressed.append(outbuffer, zs.total_out - compressed.size());
+        }
+    } while (ret == Z_OK);
+
+    deflateEnd(&zs);
+
+    if (ret != Z_STREAM_END) {
+        return "";
+    }
+
+    return compressed;
 }
 
-void send_http_response(const int& client_fd, const char* buf, const size_t& lenght) {
-  size_t sent = 0;
-  while (sent < lenght) {
-    ssize_t cnt = ::send(client_fd, buf + sent, lenght - sent, 0);
-    
-    if (cnt > 0) {
-      sent += static_cast<size_t>(cnt);
-      continue;
-    }
+// --- Helper: Extract Header Value ---
+std::string extract_header_value(const std::string& request, const std::string& header_name) {
+    std::string search = header_name + ": ";
+    auto start_pos = std::search(
+        request.begin(), request.end(),
+        search.begin(), search.end(),
+        [](char a, char b) { return std::tolower(a) == std::tolower(b); }
+    );
 
-    if (cnt == 0) {
-      std::cerr << "send() returned 0: conncetion may be closed\n";
-      break;
-    }
-    
-    if (errno == EINTR) {
-      continue;
-    }
+    if (start_pos == request.end()) return "";
 
-    std::cerr << "send() failed: (" << errno << ") " << std::strerror(errno) << "\n";
-    break; 
-  }
+    size_t start_idx = std::distance(request.begin(), start_pos) + search.length();
+    size_t end_idx = request.find("\r\n", start_idx);
+    
+    if (end_idx == std::string::npos) return "";
+
+    return request.substr(start_idx, end_idx - start_idx);
 }
 
-void send_http_response(const int& client_fd, const std::string& buf) {
-  size_t sent = 0;
-  size_t lenght = buf.size();
-  
-  const char* data = buf.data();
-
-  while (sent < lenght) {
-    ssize_t cnt = ::send(client_fd, data + sent, lenght - sent, 0);
-    
-    if (cnt > 0) {
-      sent += static_cast<size_t>(cnt);
-      continue;
+// --- Helper: Sending Responses ---
+void send_raw(int client_fd, const std::string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t n = ::send(client_fd, data.c_str() + sent, data.size() - sent, 0);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "Send failed: " << std::strerror(errno) << "\n";
+            return;
+        }
+        if (n == 0) return; // Connection closed
+        sent += n;
     }
-
-    if (cnt == 0) {
-      std::cerr << "send() returned 0: conncetion may be closed\n";
-      break;
-    }
-    
-    if (errno == EINTR) {
-      continue;
-    }
-
-    std::cerr << "send() failed: (" << errno << ") " << std::strerror(errno) << "\n";
-    break; 
-  }
 }
 
-std::string extract_header_value(const char* buf, const size_t buf_len, const std::string& header_name);
+// --- Logic: GET Requests ---
+void handle_get(int client_fd, const std::string& path, const std::string& req_str, bool close_requested) {
+    
+    // 1. Root
+    if (path == "/") {
+        send_raw(client_fd, "HTTP/1.1 200 OK\r\n\r\n");
+        return;
+    }
 
-bool read_http_request(const int& client_fd, char*& out, size_t& out_len) {
-  out = nullptr;
-  out_len = 0;
-
-  const size_t MAX = 64 * 1024;
-  size_t cap = 4096;
-
-  char* data = (char*)std::malloc(cap + 1);
-  if (!data) {
-    return false;
-  }
-
-  size_t len = 0;
-  data[0] = '\0';
-
-  char chunk[4096];
-  size_t search_from = 0;
-
-  while (len < MAX) {
-    ssize_t n = ::recv(client_fd, chunk, sizeof(chunk), 0);
-    if (n > 0) {
-
-      if (len + (size_t)n > cap) {
-        while (cap < len + (size_t)n) {
-          cap *= 2;
+    // 2. Echo
+    if (path.rfind("/echo/", 0) == 0) { // starts_with
+        std::string content = path.substr(6);
+        std::string encoding = extract_header_value(req_str, "Accept-Encoding");
+        
+        bool use_gzip = false;
+        // Check for 'gzip' in the comma separated list
+        if (encoding.find("gzip") != std::string::npos) { 
+             use_gzip = true;
         }
 
-        char* nd = (char*)std::realloc(data, cap + 1);
-        if (!nd) {
-          std::free(data);
-          return false;
+        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
+        
+        if (use_gzip) {
+            std::string compressed = gzip_compress(content);
+            // If compression worked, swap content. If not, fallback to plain.
+            if (!compressed.empty()) {
+                content = compressed;
+                response += "Content-Encoding: gzip\r\n";
+            }
         }
-        data = nd;
-      }
 
-      std::memcpy(data + len, chunk, (size_t)n);
-      len += (size_t)n;
-      data[len] = '\0';
-
-      for (size_t i = search_from; i + 3 < len; ++ i) {
-        if (data[i] == '\r' && data[i + 1] == '\n' && data[i + 2] == '\r' && data[i + 3] == '\n') {
-          size_t headers_end = i + 4;
-          
-          std::string content_length_str = extract_header_value(data, len, "Content-Length");
-          size_t content_length = 0;
-          if (!content_length_str.empty()) {
-            content_length = std::stoull(content_length_str);
-          }
-          
-          size_t total_needed = headers_end + content_length;
-          if (len >= total_needed) {
-            out = data;
-            out_len = total_needed;
-            return true;
-          }
-          if (content_length == 0) {
-            out = data;
-            out_len = headers_end;
-            return true;
-          }
-          break;
-        }
-      }
-
-      search_from = (len >= 3 ? (len - 3) : 0);
-      continue;
+        response += "Content-Length: " + std::to_string(content.size()) + "\r\n";
+        if (close_requested) response += "Connection: close\r\n";
+        response += "\r\n";
+        response += content;
+        
+        send_raw(client_fd, response);
+        return;
     }
 
-    if (n == 0) {
-      std::free(data);
-      return false;
+    // 3. User-Agent
+    if (path == "/user-agent") {
+        std::string agent = extract_header_value(req_str, "User-Agent");
+        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
+        response += "Content-Length: " + std::to_string(agent.size()) + "\r\n\r\n" + agent;
+        send_raw(client_fd, response);
+        return;
     }
-    if (errno == EINTR) {
-      continue;
-    }
-    
-    std::cerr << "recv() failed (errno=" << errno << "): " << std::strerror(errno) << "\n";
-    std::free(data);
-    return false;
-  }
 
-  std::free(data);
-  return false;
-}
+    // 4. Files
+    if (path.rfind("/files/", 0) == 0) {
+        std::string filename = path.substr(7);
+        std::string filepath = g_directory + "/" + filename;
+        
+        std::ifstream file(filepath, std::ios::binary);
+        if (file) {
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            std::string content = buffer.str();
 
-std::string extract_route(const char* buf, const size_t buf_len) {
-  std::string answer = "";
-  for (size_t i = 0; i < buf_len; ++ i) {
-    if (buf[i] == '/') {
-      while (i < buf_len && buf[i] != ' ') {
-        answer += buf[i];
-        ++ i;
-      }
-      break;
-    }
-  }
-  
-  return answer;
-}
-
-std::string extract_header_value(const char* buf, const size_t buf_len, const std::string& header_name) {
-  std::string search = header_name + ": ";
-  
-  for (size_t i = 0; i + search.size() < buf_len; ++i) {
-    bool match = true;
-    for (size_t j = 0; j < search.size(); ++j) {
-      if (std::tolower(buf[i + j]) != std::tolower(search[j])) {
-        match = false;
-        break;
-      }
-    }
-    
-    if (match) {
-      size_t start = i + search.size();
-      std::string value = "";
-      while (start < buf_len && buf[start] != '\r' && buf[start] != '\n') {
-        value += buf[start];
-        ++start;
-      }
-      return value;
-    }
-  }
-  
-  return "";
-}
-
-std::string extract_method(const char* buf, const size_t buf_len) {
-  std::string method = "";
-  for (size_t i = 0; i < buf_len && buf[i] != ' '; ++ i) {
-    method += buf[i];
-  }
-  return method;
-}
-
-std::string extract_body(const char* buf, const size_t buf_len) {
-  for (size_t i = 0; i + 3 < buf_len; ++ i) {
-    if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
-      size_t body_start = i + 4;
-      return std::string(buf + body_start, buf_len - body_start);
-    }
-  }
-  return "";
-}
-
-bool write_file(const std::string& filepath, const std::string& content) {
-  std::ofstream file(filepath, std::ios::binary);
-  if (!file) {
-    return false;
-  }
-
-  file << content;
-  return file.good();
-}
-
-std::string read_file(const std::string& filepath) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file) {
-    return "";
-  }
-
-  std::ostringstream contents;
-  contents << file.rdbuf();
-  return contents.str();
-}
-
-// encoding
-bool supports_gzip(const char* req, const size_t req_len) {
-  std::string accept_encoding = extract_header_value(req, req_len, "Accept-Encoding");
-  
-  return accept_encoding.find("gzip") != std::string::npos;
-}
-
-bool should_close_connection(const char* req, const size_t req_len) {
-  std::string connection = extract_header_value(req, req_len, "Connection");
-  return connection.find("close") != std::string::npos;
-}
-
-void get_endpoint(const int& client_fd, const char* req, const size_t& req_len) {
-  std::string route = extract_route(req, req_len);
-  bool close_requested = should_close_connection(req, req_len);
-
-  // std::cerr << route << "\n";
-  if (route == "/") {
-    if (close_requested) {
-      std::string response = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
-      send_http_response(client_fd, response);
-    } else {
-      send_http_response(client_fd, RESP_200, RESP_200_LEN);
-    }
-    return;
-  }
-
-  if (route.size() > 6  && route.substr(0, 6) == "/echo/") {
-    std::string response_body = route.substr(6, std::string::npos);
-    
-    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
-    
-    bool use_gzip = supports_gzip(req, req_len);
-    
-    if (use_gzip) {
-      response += "Content-Encoding: gzip\r\n";
-      response_body = gzip_compress(response_body);
-    }
-    
-    if (close_requested) {
-      response += "Connection: close\r\n";
-    }
-    
-    response += "Content-Length: " + std::to_string(response_body.size()) + "\r\n\r\n" + response_body;
-    
-    send_http_response(client_fd, response);
-    return;
-  }
-
-  if (route == "/user-agent") {
-    std::string user_agent = extract_header_value(req, req_len, "User-Agent");
-    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
-    
-    if (close_requested) {
-      response += "Connection: close\r\n";
-    }
-    
-    response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n\r\n" + user_agent;
-    send_http_response(client_fd, response);
-    return;
-  }
-
-  if (route.size() > 7 && route.substr(0, 7) == "/files/") {
-    std::string filename = route.substr(7);
-    std::string filepath = g_directory + "/" + filename;
-
-    std::string file_contents = read_file(filepath);
-
-    if (file_contents.empty()) {
-      std::ifstream check (filepath);
-      if (!check) {
-        if (close_requested) {
-          std::string response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-          send_http_response(client_fd, response);
+            std::string response = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n";
+            response += "Content-Length: " + std::to_string(content.size()) + "\r\n\r\n" + content;
+            send_raw(client_fd, response);
         } else {
-          send_http_response(client_fd, RESP_404, RESP_404_LEN);
+            send_raw(client_fd, "HTTP/1.1 404 Not Found\r\n\r\n");
         }
         return;
-      }
     }
 
-    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n";
-    
-    if (close_requested) {
-      response += "Connection: close\r\n";
-    }
-    
-    response += "Content-Length: " + std::to_string(file_contents.size()) + "\r\n\r\n" + file_contents;
-    send_http_response(client_fd, response); 
-    return;
-  }
-
-  if (close_requested) {
-    std::string response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-    send_http_response(client_fd, response);
-  } else {
-    send_http_response(client_fd, RESP_404, RESP_404_LEN);
-  }
+    send_raw(client_fd, "HTTP/1.1 404 Not Found\r\n\r\n");
 }
 
-void post_endpoint(const int& client_fd, const char* req, const size_t& req_len) {
-  std::string route = extract_route(req, req_len);
-  bool close_requested = should_close_connection(req, req_len);
-
-  if (route.size() > 7 && route.substr(0, 7) == "/files/") {
-    std::string filename = route.substr(7);
-    std::string filepath = g_directory + "/" + filename;
-    
-    std::string body = extract_body(req, req_len);
-    
-    if (write_file(filepath, body)) {
-      if (close_requested) {
-        std::string response = "HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n";
-        send_http_response(client_fd, response);
-      } else {
-        send_http_response(client_fd, RESP_201, RESP_201_LEN);
-      }
-    } else {
-      if (close_requested) {
-        std::string response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-        send_http_response(client_fd, response);
-      } else {
-        send_http_response(client_fd, RESP_404, RESP_404_LEN);
-      }
+// --- Logic: POST Requests ---
+void handle_post(int client_fd, const std::string& path, const std::string& body) {
+    if (path.rfind("/files/", 0) == 0) {
+        std::string filename = path.substr(7);
+        std::string filepath = g_directory + "/" + filename;
+        
+        std::ofstream file(filepath, std::ios::binary);
+        if (file) {
+            file << body;
+            send_raw(client_fd, "HTTP/1.1 201 Created\r\n\r\n");
+        } else {
+            send_raw(client_fd, "HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        }
+        return;
     }
-    return;
-  }
-
-  if (close_requested) {
-    std::string response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-    send_http_response(client_fd, response);
-  } else {
-    send_http_response(client_fd, RESP_404, RESP_404_LEN);
-  }
+    
+    send_raw(client_fd, "HTTP/1.1 404 Not Found\r\n\r\n");
 }
 
+// --- Request Parsing Logic ---
+// Returns string containing complete request if found in buffer, else empty string
+std::string try_parse_request(std::string& buffer) {
+    size_t header_end = buffer.find("\r\n\r\n");
+    if (header_end == std::string::npos) return ""; // Headers not fully received yet
+
+    // Include the delimiter size
+    size_t headers_size = header_end + 4;
+    
+    // Parse headers just to find Content-Length
+    std::string headers = buffer.substr(0, header_end);
+    std::string cl_str = extract_header_value(headers, "Content-Length");
+    size_t content_len = 0;
+    if (!cl_str.empty()) {
+        try {
+            content_len = std::stoul(cl_str);
+        } catch(...) { content_len = 0; }
+    }
+
+    size_t total_size = headers_size + content_len;
+
+    // Do we have the full body?
+    if (buffer.size() >= total_size) {
+        std::string request = buffer.substr(0, total_size);
+        buffer.erase(0, total_size); // Remove processed request from buffer
+        return request;
+    }
+
+    return ""; // Need more data
+}
+
+
+// --- Main Client Handler Loop ---
 void handle_client(int client_fd) {
-  while(true) {
-    char* req = nullptr;
-    size_t len_req = 0;
+    std::string accum_buffer;
+    char buffer[BUFFER_SIZE];
 
-    if (!read_http_request(client_fd, req, len_req)) {
-      break; 
+    while (true) {
+        // 1. Read available data into accumulator
+        ssize_t bytes_read = ::recv(client_fd, buffer, sizeof(buffer), 0);
+        if (bytes_read > 0) {
+            accum_buffer.append(buffer, bytes_read);
+        } else if (bytes_read == 0) {
+            break; // Client closed
+        } else {
+            // Error
+            break; 
+        }
+
+        // 2. Loop to process ALL requests currently in the buffer (Pipelining support)
+        while (true) {
+            std::string req_str = try_parse_request(accum_buffer);
+            if (req_str.empty()) break; // Waiting for more data
+
+            // Parse Method, Path
+            std::stringstream ss(req_str);
+            std::string method, path;
+            ss >> method >> path;
+
+            // Extract Body (manually, as ss skips whitespace)
+            size_t header_end = req_str.find("\r\n\r\n");
+            std::string body = (header_end != std::string::npos) ? req_str.substr(header_end + 4) : "";
+
+            // Check headers for Connection: close
+            std::string conn_val = extract_header_value(req_str, "Connection");
+            bool close_conn = (conn_val.find("close") != std::string::npos);
+
+            // Dispatch
+            if (method == "GET") {
+                handle_get(client_fd, path, req_str, close_conn);
+            } else if (method == "POST") {
+                handle_post(client_fd, path, body);
+            } else {
+                send_raw(client_fd, "HTTP/1.1 405 Method Not Allowed\r\n\r\n");
+            }
+            
+            if (close_conn) {
+                close(client_fd);
+                return;
+            }
+        }
     }
 
-    std::string method = extract_method(req, len_req);
-    bool close_connection = should_close_connection(req, len_req);
-
-    
-    if (method == "GET") {
-      get_endpoint(client_fd, req, len_req);
-    } else if (method == "POST") {
-      post_endpoint(client_fd, req, len_req);
-    } else {   
-      send_http_response(client_fd, RESP_404, RESP_404_LEN);
-    }
-
-    if(req) {
-      std::free(req);
-    }
-
-    if(close_connection) {
-      break; 
-    }
-  }
-  
-  ::close(client_fd);
-  std::cout << "Client disconnected\n";
+    close(client_fd);
 }
 
 int main(int argc, char **argv) {
-  // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
 
-  for (size_t i = 1; i < argc; ++ i) {
-    if (std::string(argv[i]) == "--directory" && i + 1 < argc) {
-      g_directory = argv[i + 1];
-      ++ i;
-    }
+  for (int i = 1; i < argc; ++i) {
+      if (std::string(argv[i]) == "--directory" && i + 1 < argc) {
+          g_directory = argv[i + 1];
+          i++;
+      }
   }
 
-  // You can use print statements as follows for debugging, they'll be visible when running tests.
-  std::cout << "Logs from your program will appear here!\n";
-
-  // TODO: Uncomment the code below to pass the first stage
-  
-  int server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
    std::cerr << "Failed to create server socket\n";
    return 1;
   }
   
-  // Since the tester restarts your program quite often, setting SO_REUSEADDR
-  // ensures that we don't run into 'Address already in use' errors
   int reuse = 1;
-  if (::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
     std::cerr << "setsockopt failed\n";
     return 1;
   }
@@ -485,35 +295,28 @@ int main(int argc, char **argv) {
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(4221);
   
-  if (::bind(server_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) != 0) {
+  if (bind(server_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) != 0) {
     std::cerr << "Failed to bind to port 4221\n";
     return 1;
   }
   
-  int connection_backlog = 5;
-  if (::listen(server_fd, connection_backlog) != 0) {
+  if (listen(server_fd, 5) != 0) {
     std::cerr << "listen failed\n";
     return 1;
   }
   
-  std::cout << "Server is listening on port 4221...\n";
-  while (true) {
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
+  std::cout << "Server listening on port 4221\n";
   
-    int client_fd = ::accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-    
-    if (client_fd < 0) {
-      std::cerr << "Failed to accept client connection\n";
-      continue;
-    }
-
-    std::cout << "Client connected\n";
-    
-    std::thread client_thread(handle_client, client_fd);
-    client_thread.detach();
+  while (true) {
+      struct sockaddr_in client_addr;
+      socklen_t client_len = sizeof(client_addr);
+      int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+      
+      if (client_fd < 0) continue;
+      
+      std::thread(handle_client, client_fd).detach();
   }
 
-  ::close(server_fd);
+  close(server_fd);
   return 0;
 }
